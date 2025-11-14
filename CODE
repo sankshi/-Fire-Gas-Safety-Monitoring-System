@@ -1,0 +1,218 @@
+#define BLYNK_TEMPLATE_ID "TMPL3QmDuo0A1"
+#define BLYNK_TEMPLATE_NAME "Gas and Fire"
+#define BLYNK_AUTH_TOKEN "QBQZXflngZCWTC9rNs9AjHK3_uHQWToi"
+
+#define TINY_GSM_MODEM_SIM7600
+#include <TinyGsmClient.h>
+#include <BlynkSimpleTinyGSM.h>
+
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Servo.h>
+
+Servo myservo;
+int pos = 0;
+bool moved = false;
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define SCREEN_ADDRESS 0x3C
+#define BUZZER_PIN PA2 
+const int GAS_PIN = A0;
+#define FLAME1_PIN PA1 
+#define FLAME2_PIN PA3 
+#define FLAME3_PIN PA4 
+#define BUZZER_PIN PA2 
+#define RELAY_PIN  PB6
+
+
+const char apn[]  = "airtelgprs.com";
+const char user[] = "";
+const char pass[] = "";
+
+#define VPIN_FLAME1 V1
+#define VPIN_FLAME2 V3
+#define VPIN_FLAME3 V2
+#define VPIN_GAS    V0
+#define VPIN_BUZZER V5
+#define VPIN_RELAY  V4
+#define VPIN_SERVO  V6
+
+
+const int GAS_THRESHOLD = 200;
+const int FIRE_THRESHOLD=500;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+#define SIM7600 Serial1   
+TinyGsm modem(Serial1);
+
+ 
+
+void sendCommand(const char *cmd, int wait = 2000) {
+  SIM7600.print(cmd);
+  SIM7600.print("\r");
+  unsigned long t = millis();
+  while (millis() - t < wait) {
+    while (SIM7600.available()) {
+      Serial.write(SIM7600.read());
+    }
+  }
+}
+
+void sendSMS(const char *number, const char *text) {
+  Serial.println("Preparing SMS...");
+  sendCommand("AT+CMGF=1", 1000);
+
+  SIM7600.print("AT+CMGS=\"");
+  SIM7600.print(number);
+  SIM7600.print("\"\r");
+  delay(500);
+
+  unsigned long start = millis();
+  bool gotPrompt = false;
+  while (millis() - start < 3000) {
+    if (SIM7600.available()) {
+      char c = SIM7600.read();
+      Serial.write(c);
+      if (c == '>') {
+        gotPrompt = true;
+        break;
+      }
+    }
+  }
+
+  if (!gotPrompt) {
+    Serial.println("No prompt received, SMS failed.");
+    return;
+  }
+
+  SIM7600.print(text);
+  SIM7600.write(26);
+  Serial.println("SMS sent command issued, waiting for confirmation...");
+}
+BLYNK_WRITE(VPIN_BUZZER) {
+  int state = param.asInt();   
+  digitalWrite(BUZZER_PIN, state);
+  Serial.print("Buzzer: "); Serial.println(state ? "ON" : "OFF");
+}
+
+BLYNK_WRITE(VPIN_RELAY) {
+  int state = param.asInt();
+  digitalWrite(RELAY_PIN, state);
+  Serial.print("Relay: "); Serial.println(state ? "ON" : "OFF");
+}
+
+BLYNK_WRITE(VPIN_SERVO) {
+  int angle = param.asInt();   
+  if (!myservo.attached()) myservo.attach(PB5);
+  myservo.write(angle);
+  Serial.print("Servo set to: "); Serial.println(angle);
+}
+
+
+void setup() {
+  pinMode(GAS_PIN, INPUT);
+  pinMode(FLAME1_PIN, INPUT);
+  pinMode(FLAME2_PIN, INPUT);
+  pinMode(FLAME3_PIN, INPUT);
+   pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RELAY_PIN, LOW);
+
+
+   Wire.setSDA(PB4);
+  Wire.setSCL(PA8);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    for(;;); 
+  }
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("System Initializing...");
+  display.display();
+
+  Serial.begin(115200);
+  SIM7600.begin(115200);
+  Serial1.begin(115200);
+  // STMSerial.begin(115200);
+  delay(3000);
+  Serial.println("STM32 + SIM7600G Flame SMS Test");
+  
+  sendCommand("AT");
+  sendCommand("AT+CMGF=1");
+  sendCommand("AT+CSCS=\"GSM\"");
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("System Ready!");
+  display.display();
+  myservo.attach(PB5);
+  Blynk.begin(BLYNK_AUTH_TOKEN, modem, apn, user, pass);
+}
+
+void loop() {
+  
+  int gas_value = analogRead(GAS_PIN);
+  int flame1 = analogRead(FLAME1_PIN);
+  int flame2 = analogRead(FLAME2_PIN);
+  int flame3 = analogRead(FLAME3_PIN);
+  bool fireDetected = ((flame1 < FIRE_THRESHOLD) || (flame2 < FIRE_THRESHOLD) || (flame3 < FIRE_THRESHOLD));
+  if ((gas_value > GAS_THRESHOLD && !moved) || fireDetected)  {
+    for (pos = 0; pos <= 180; pos++) {
+      myservo.write(pos);
+      delay(15);
+    }
+    myservo.detach();
+    moved = true;
+  }
+
+  if ((gas_value > GAS_THRESHOLD )|| fireDetected)  { 
+    Serial.println("🚨 Gas detected or fire detected ! Sending SMS...");
+    sendSMS("+918999081678", "GAS LEAK DETECTED! Take action immediately.");
+      digitalWrite(BUZZER_PIN, HIGH);   // Buzzer ON
+    digitalWrite(RELAY_PIN, HIGH);    // Relay ON
+
+
+    delay(10000);
+  }
+  
+  display.clearDisplay();
+  
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("gas_value:");
+  
+  display.setTextSize(2);
+  display.setCursor(0, 12);
+  display.print(gas_value);
+  
+  display.setTextSize(1);
+  display.setCursor(0, 30);
+  display.print("Flame1: ");
+  display.print(flame1);
+  //display.println(analogRead(FLAME1_PIN) >= FIRE_THRESHOLD ? "DETECTED" : "Safe");
+  
+  display.setCursor(0, 40);
+  display.print("Flame2: ");
+  display.print(flame2);
+  //display.println(analogRead(FLAME2_PIN)  >=FIRE_THRESHOLD  ? "DETECTED" : "Safe");
+  
+  display.setCursor(0, 50);
+  display.print("Flame3: ");
+  display.print(flame3);
+ // display.println(analogRead(FLAME3_PIN) >= FIRE_THRESHOLD ? "DETECTED" : "Safe");
+  
+  display.display();
+  Blynk.run();
+
+  Blynk.virtualWrite(VPIN_FLAME1, flame1);
+  Blynk.virtualWrite(VPIN_FLAME2, flame2);
+  Blynk.virtualWrite(VPIN_FLAME3, flame3);
+  Blynk.virtualWrite(VPIN_GAS, gas_value);
+
+  delay(1000);
+
+
+}
